@@ -1,0 +1,268 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Install Android SDK
+        run: |
+          mkdir -p $HOME/android-sdk/cmdline-tools
+          cd $HOME/android-sdk/cmdline-tools
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
+          unzip -q commandlinetools-linux-9477386_latest.zip
+          rm commandlinetools-linux-9477386_latest.zip
+          mkdir -p latest
+          mv cmdline-tools/* latest/ 2>/dev/null || true
+          yes | $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null
+          $HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2" > /dev/null
+
+      - name: Install Gradle
+        run: |
+          wget -q https://services.gradle.org/distributions/gradle-8.4-bin.zip
+          unzip -q gradle-8.4-bin.zip
+          echo "$GITHUB_WORKSPACE/gradle-8.4/bin" >> $GITHUB_PATH
+
+      - name: Create Project Files
+        run: |
+          mkdir -p app/src/main/java/com/potato/cheatengine
+          mkdir -p app/src/main/res/{layout,values,mipmap-hdpi,mipmap-mdpi,mipmap-xhdpi,mipmap-xxhdpi,mipmap-xxxhdpi}
+          cat > settings.gradle <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
+          rootProject.name = "CarromCheatEngine"
+          include ':app'
+          EOF
+          cat > build.gradle <<'EOF'
+          buildscript {
+              repositories { google(); mavenCentral() }
+              dependencies {
+                  classpath 'com.android.tools.build:gradle:7.4.2'
+                  classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.8.10'
+              }
+          }
+          EOF
+          cat > gradle.properties <<'EOF'
+          android.useAndroidX=true
+          android.enableJetifier=true
+          org.gradle.jvmargs=-Xmx2048m
+          EOF
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+              id 'kotlin-android'
+          }
+          android {
+              namespace 'com.potato.cheatengine'
+              compileSdk 33
+              defaultConfig {
+                  applicationId "com.potato.cheatengine"
+                  minSdk 21
+                  targetSdk 33
+                  versionCode 1
+                  versionName "1.0"
+              }
+              buildTypes {
+                  release { minifyEnabled false }
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_1_8
+                  targetCompatibility JavaVersion.VERSION_1_8
+              }
+              kotlinOptions { jvmTarget = '1.8' }
+          }
+          dependencies {
+              implementation 'androidx.appcompat:appcompat:1.6.1'
+              implementation 'com.google.android.material:material:1.9.0'
+              implementation 'org.luaj:luaj-jse:3.0.1'
+          }
+          EOF
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              package="com.potato.cheatengine">
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+              <application
+                  android:allowBackup="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:label="@string/app_name"
+                  android:roundIcon="@mipmap/ic_launcher_round"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.CarromCheatEngine">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <activity android:name=".ProcessListActivity" />
+                  <activity android:name=".ScanActivity" />
+                  <activity android:name=".LuaEditorActivity" />
+                  <service android:name=".FloatingService" android:enabled="true" android:exported="false" />
+              </application>
+          </manifest>
+          EOF
+          cat > app/src/main/java/com/potato/cheatengine/MainActivity.kt <<'EOF'
+          package com.potato.cheatengine
+          import android.content.Intent
+          import android.os.Bundle
+          import android.widget.Button
+          import android.widget.TextView
+          import androidx.appcompat.app.AppCompatActivity
+          class MainActivity : AppCompatActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContentView(R.layout.activity_main)
+                  val tvStatus = findViewById<TextView>(R.id.tv_status)
+                  tvStatus.text = if (RootUtils.isRooted()) "Root: Yes" else "Root: No"
+                  findViewById<Button>(R.id.btn_select_process).setOnClickListener { startActivity(Intent(this, ProcessListActivity::class.java)) }
+                  findViewById<Button>(R.id.btn_open_lua).setOnClickListener { startActivity(Intent(this, LuaEditorActivity::class.java)) }
+                  findViewById<Button>(R.id.btn_start_overlay).setOnClickListener { startService(Intent(this, FloatingService::class.java)) }
+              }
+          }
+          EOF
+          cat > app/src/main/java/com/potato/cheatengine/RootUtils.kt <<'EOF'
+          package com.potato.cheatengine
+          import java.io.DataOutputStream
+          object RootUtils {
+              fun isRooted(): Boolean = try { val p = Runtime.getRuntime().exec("su"); val os = DataOutputStream(p.outputStream); os.writeBytes("exit\n"); os.flush(); p.waitFor(); p.exitValue() == 0 } catch (e: Exception) { false }
+              fun execute(cmd: String): String { val p = Runtime.getRuntime().exec("su"); val os = DataOutputStream(p.outputStream); os.writeBytes(cmd + "\n"); os.flush(); os.writeBytes("exit\n"); os.flush(); p.waitFor(); return p.inputStream.bufferedReader().readText() }
+          }
+          EOF
+          cat > app/src/main/java/com/potato/cheatengine/MemoryScanner.kt <<'EOF'
+          package com.potato.cheatengine
+          import java.io.File
+          import java.io.RandomAccessFile
+          class MemoryScanner(private val pid: Int) {
+              private val memFile = RandomAccessFile("/proc/$pid/mem", "rw")
+              private val mapsFile = File("/proc/$pid/maps")
+              private var regions = mutableListOf<MemoryRegion>()
+              data class MemoryRegion(val start: Long, val end: Long, val perms: String, val path: String)
+              fun parseMaps() { regions.clear(); mapsFile.forEachLine { line -> val parts = line.split(Regex("\\s+")); if (parts.size >= 6) { val addr = parts[0].split("-"); val start = addr[0].toLong(16); val end = addr[1].toLong(16); val perms = parts[1]; val path = if (parts.size > 5) parts[5] else ""; if (perms.contains("rw")) regions.add(MemoryRegion(start, end, perms, path)) } } }
+              fun searchValue(value: Long, type: ValueType): List<Long> { val results = mutableListOf<Long>(); val buffer = ByteArray(4096); for (region in regions) { var offset = region.start; var remaining = region.end - region.start; while (remaining > 0) { val toRead = minOf(4096L, remaining).toInt(); try { memFile.seek(offset); memFile.readFully(buffer, 0, toRead); for (i in 0 until toRead - type.size) { val found = when (type) { ValueType.INT -> buffer.getInt(i) == value.toInt(); ValueType.LONG -> buffer.getLong(i) == value; ValueType.FLOAT -> buffer.getFloat(i) == value.toFloat(); ValueType.DOUBLE -> buffer.getDouble(i) == value.toDouble() }; if (found) results.add(offset + i) } } catch (e: Exception) {}; offset += toRead; remaining -= toRead } }; return results }
+              fun writeValue(address: Long, value: Long, type: ValueType) { memFile.seek(address); when (type) { ValueType.INT -> memFile.writeInt(value.toInt()); ValueType.LONG -> memFile.writeLong(value); ValueType.FLOAT -> memFile.writeFloat(value.toFloat()); ValueType.DOUBLE -> memFile.writeDouble(value.toDouble()) } }
+              enum class ValueType(val size: Int) { INT(4), LONG(8), FLOAT(4), DOUBLE(8) }
+          }
+          EOF
+          cat > app/src/main/java/com/potato/cheatengine/LuaEngine.kt <<'EOF'
+          package com.potato.cheatengine
+          import org.luaj.vm2.Globals
+          import org.luaj.vm2.LuaValue
+          import org.luaj.vm2.lib.jse.JsePlatform
+          class LuaEngine {
+              private val globals = JsePlatform.standardGlobals()
+              fun executeScript(script: String) { globals.load(script).call() }
+              fun registerMemoryFunctions(scanner: MemoryScanner) { val memLib = LuaValue.tableOf(); memLib.set("search", object : org.luaj.vm2.lib.VarArgFunction() { override fun invoke(args: org.luaj.vm2.Varargs): LuaValue { val value = args.arg1().tolong(); val typeStr = args.arg(2).tojstring(); val type = when (typeStr) { "INT" -> MemoryScanner.ValueType.INT; "LONG" -> MemoryScanner.ValueType.LONG; "FLOAT" -> MemoryScanner.ValueType.FLOAT; "DOUBLE" -> MemoryScanner.ValueType.DOUBLE; else -> MemoryScanner.ValueType.INT }; val results = scanner.searchValue(value, type); val table = LuaValue.tableOf(); results.forEachIndexed { i, addr -> table.set(i+1, LuaValue.valueOf(addr)) }; return table } }); memLib.set("write", object : org.luaj.vm2.lib.VarArgFunction() { override fun invoke(args: org.luaj.vm2.Varargs): LuaValue { val address = args.arg1().tolong(); val value = args.arg(2).tolong(); val typeStr = args.arg(3).tojstring(); val type = when (typeStr) { "INT" -> MemoryScanner.ValueType.INT; "LONG" -> MemoryScanner.ValueType.LONG; "FLOAT" -> MemoryScanner.ValueType.FLOAT; "DOUBLE" -> MemoryScanner.ValueType.DOUBLE; else -> MemoryScanner.ValueType.INT }; scanner.writeValue(address, value, type); return LuaValue.TRUE } }); globals.set("memory", memLib) }
+          }
+          EOF
+          cat > app/src/main/java/com/potato/cheatengine/FloatingService.kt <<'EOF'
+          package com.potato.cheatengine
+          import android.app.Service
+          import android.content.Intent
+          import android.graphics.PixelFormat
+          import android.os.Build
+          import android.os.IBinder
+          import android.view.Gravity
+          import android.view.LayoutInflater
+          import android.view.MotionEvent
+          import android.view.View
+          import android.view.WindowManager
+          import android.widget.Button
+          class FloatingService : Service() {
+              private lateinit var wm: WindowManager
+              private lateinit var view: View
+              private var params: WindowManager.LayoutParams? = null
+              override fun onBind(intent: Intent?): IBinder? = null
+              override fun onCreate() { super.onCreate(); wm = getSystemService(WINDOW_SERVICE) as WindowManager; view = LayoutInflater.from(this).inflate(R.layout.floating_overlay, null); params = WindowManager.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT, if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.START; x = 0; y = 100 }; wm.addView(view, params); view.findViewById<Button>(R.id.btn_scan).setOnClickListener { startActivity(Intent(this, ScanActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }; view.setOnTouchListener(object : View.OnTouchListener { var ix=0; var iy=0; var tx=0f; var ty=0f; override fun onTouch(v: View, e: MotionEvent): Boolean { when(e.action) { MotionEvent.ACTION_DOWN -> { ix = params?.x ?: 0; iy = params?.y ?: 0; tx = e.rawX; ty = e.rawY; return true }; MotionEvent.ACTION_MOVE -> { params?.x = ix + (e.rawX - tx).toInt(); params?.y = iy + (e.rawY - ty).toInt(); wm.updateViewLayout(view, params); return true } }; return false } }) }
+              override fun onDestroy() { super.onDestroy(); if (::view.isInitialized) wm.removeView(view) }
+          }
+          EOF
+          cat > app/src/main/java/com/potato/cheatengine/ProcessListActivity.kt <<'EOF'
+          package com.potato.cheatengine
+          import android.os.Bundle
+          import android.widget.ArrayAdapter
+          import android.widget.ListView
+          import android.widget.Toast
+          import androidx.appcompat.app.AppCompatActivity
+          import java.io.File
+          class ProcessListActivity : AppCompatActivity() { override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); setContentView(R.layout.activity_process_list); val processes = mutableListOf<String>(); File("/proc").listFiles()?.forEach { dir -> val name = dir.name; if (name.toIntOrNull() != null) { try { val cmdline = File(dir, "cmdline").readText().trim().replace('\u0000', ' '); if (cmdline.isNotEmpty()) processes.add("$name: $cmdline") } catch (e: Exception) {} } }; val lv = findViewById<ListView>(R.id.list_processes); lv.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, processes); lv.setOnItemClickListener { _, _, pos, _ -> val selected = processes[pos]; val pid = selected.substringBefore(":").toIntOrNull(); if (pid != null) { Toast.makeText(this, "Selected PID: $pid", Toast.LENGTH_SHORT).show(); MemoryScannerHolder.currentPid = pid; finish() } } } }
+          object MemoryScannerHolder { var currentPid: Int? = null; var scanner: MemoryScanner? = null; fun getScanner(): MemoryScanner? { if (scanner == null || scanner!!.pid != currentPid) { currentPid?.let { pid -> scanner = MemoryScanner(pid); scanner!!.parseMaps() } }; return scanner } }
+          EOF
+          cat > app/src/main/java/com/potato/cheatengine/ScanActivity.kt <<'EOF'
+          package com.potato.cheatengine
+          import android.os.Bundle
+          import android.widget.ArrayAdapter
+          import android.widget.Button
+          import android.widget.EditText
+          import android.widget.ListView
+          import android.widget.Spinner
+          import android.widget.Toast
+          import androidx.appcompat.app.AppCompatActivity
+          class ScanActivity : AppCompatActivity() { private var results: List<Long> = emptyList(); override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); setContentView(R.layout.activity_scan); val etValue = findViewById<EditText>(R.id.et_value); val spinnerType = findViewById<Spinner>(R.id.spinner_type); val btnScan = findViewById<Button>(R.id.btn_scan); val btnFilter = findViewById<Button>(R.id.btn_filter); val listResults = findViewById<ListView>(R.id.list_results); val types = listOf("INT","LONG","FLOAT","DOUBLE"); spinnerType.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, types); spinnerType.setSelection(0); btnScan.setOnClickListener { val scanner = MemoryScannerHolder.getScanner() ?: run { Toast.makeText(this, "No process selected", Toast.LENGTH_SHORT).show(); return@setOnClickListener }; val value = etValue.text.toString().toLongOrNull() ?: return@setOnClickListener; val type = MemoryScanner.ValueType.valueOf(spinnerType.selectedItem.toString()); results = scanner.searchValue(value, type); updateList(listResults, results) }; btnFilter.setOnClickListener { val scanner = MemoryScannerHolder.getScanner() ?: return@setOnClickListener; val value = etValue.text.toString().toLongOrNull() ?: return@setOnClickListener; val type = MemoryScanner.ValueType.valueOf(spinnerType.selectedItem.toString()); results = results.filter { true }; updateList(listResults, results) }; listResults.setOnItemClickListener { _, _, pos, _ -> val addr = results[pos]; MemoryScannerHolder.getScanner()?.writeValue(addr, 99999L, MemoryScanner.ValueType.INT); Toast.makeText(this, "Written to $addr", Toast.LENGTH_SHORT).show() } }; private fun updateList(lv: ListView, addrs: List<Long>) { lv.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, addrs.map { "0x${it.toString(16)}" }) } }
+          EOF
+          cat > app/src/main/java/com/potato/cheatengine/LuaEditorActivity.kt <<'EOF'
+          package com.potato.cheatengine
+          import android.os.Bundle
+          import android.widget.Button
+          import android.widget.EditText
+          import android.widget.Toast
+          import androidx.appcompat.app.AppCompatActivity
+          class LuaEditorActivity : AppCompatActivity() { override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); setContentView(R.layout.activity_lua_editor); val etCode = findViewById<EditText>(R.id.et_lua_code); val btnRun = findViewById<Button>(R.id.btn_run_lua); btnRun.setOnClickListener { val scanner = MemoryScannerHolder.getScanner() ?: run { Toast.makeText(this, "No process selected", Toast.LENGTH_SHORT).show(); return@setOnClickListener }; val engine = LuaEngine(); engine.registerMemoryFunctions(scanner); try { engine.executeScript(etCode.text.toString()); Toast.makeText(this, "Script executed", Toast.LENGTH_SHORT).show() } catch (e: Exception) { Toast.makeText(this, "Error: ${e.message}", Toast.LENGTH_LONG).show() } } } }
+          EOF
+          cat > app/src/main/res/layout/activity_main.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?><LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:padding="16dp"><TextView android:id="@+id/tv_status" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Root status: checking..." android:textSize="16sp" android:layout_marginBottom="20dp"/><Button android:id="@+id/btn_select_process" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Select Process"/><Button android:id="@+id/btn_open_lua" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Open Lua Editor"/><Button android:id="@+id/btn_start_overlay" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Start Floating Overlay"/></LinearLayout>
+          EOF
+          cat > app/src/main/res/layout/activity_process_list.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?><LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical"><ListView android:id="@+id/list_processes" android:layout_width="match_parent" android:layout_height="match_parent"/></LinearLayout>
+          EOF
+          cat > app/src/main/res/layout/activity_scan.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?><LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:padding="16dp"><EditText android:id="@+id/et_value" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Enter value" android:inputType="numberDecimal"/><Spinner android:id="@+id/spinner_type" android:layout_width="match_parent" android:layout_height="wrap_content"/><Button android:id="@+id/btn_scan" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Scan"/><Button android:id="@+id/btn_filter" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Filter Results"/><ListView android:id="@+id/list_results" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"/></LinearLayout>
+          EOF
+          cat > app/src/main/res/layout/activity_lua_editor.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?><LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical"><EditText android:id="@+id/et_lua_code" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:gravity="top" android:hint="Write Lua script here" android:inputType="textMultiLine"/><Button android:id="@+id/btn_run_lua" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Run Script"/></LinearLayout>
+          EOF
+          cat > app/src/main/res/layout/floating_overlay.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?><LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="wrap_content" android:layout_height="wrap_content" android:orientation="horizontal" android:background="#CC000000" android:padding="8dp"><Button android:id="@+id/btn_scan" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Cheat"/></LinearLayout>
+          EOF
+          cat > app/src/main/res/values/strings.xml <<'EOF'
+          <resources><string name="app_name">Carrom Cheat Engine</string></resources>
+          EOF
+          cat > app/src/main/res/values/colors.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?><resources><color name="purple_200">#FFBB86FC</color><color name="purple_500">#FF6200EE</color><color name="purple_700">#FF3700B3</color><color name="teal_200">#FF03DAC5</color><color name="teal_700">#FF018786</color><color name="black">#FF000000</color><color name="white">#FFFFFFFF</color></resources>
+          EOF
+          cat > app/src/main/res/values/themes.xml <<'EOF'
+          <resources xmlns:tools="http://schemas.android.com/tools"><style name="Theme.CarromCheatEngine" parent="Theme.MaterialComponents.DayNight.DarkActionBar"><item name="colorPrimary">@color/purple_500</item><item name="colorPrimaryVariant">@color/purple_700</item><item name="colorOnPrimary">@color/white</item><item name="colorSecondary">@color/teal_200</item><item name="colorSecondaryVariant">@color/teal_700</item><item name="colorOnSecondary">@color/black</item></style></resources>
+          EOF
+          b64="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+          echo $b64 | base64 -d > app/src/main/res/mipmap-hdpi/ic_launcher.png
+          for d in mipmap-hdpi mipmap-mdpi mipmap-xhdpi mipmap-xxhdpi mipmap-xxxhdpi; do cp app/src/main/res/mipmap-hdpi/ic_launcher.png app/src/main/res/$d/ic_launcher.png; cp app/src/main/res/mipmap-hdpi/ic_launcher.png app/src/main/res/$d/ic_launcher_round.png; done
+          echo "sdk.dir=$HOME/android-sdk" > local.properties
+
+      - name: Build APK
+        env:
+          ANDROID_HOME: ${{ github.workspace }}/android-sdk
+          ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
+        run: |
+          chmod +x $GITHUB_WORKSPACE/gradle-8.4/bin/gradle
+          $GITHUB_WORKSPACE/gradle-8.4/bin/gradle assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: CarromCheatEngine-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
